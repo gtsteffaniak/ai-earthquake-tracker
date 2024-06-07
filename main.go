@@ -24,6 +24,7 @@ const (
 	tableName = "ai-earthquake-tracker"
 	region    = "us-east-1"
 )
+
 type Item struct {
 	ID          string  `json:"id"`
 	LastUpdated string  `json:"lastUpdated"`
@@ -36,9 +37,10 @@ type Item struct {
 }
 
 var (
-	visited = map[string]bool{}
-	ctx     = context.Background()
-	model   *genai.GenerativeModel
+	visited   = map[string]bool{}
+	ctx       = context.Background()
+	model     *genai.GenerativeModel
+	tableData = []Item{}
 )
 
 func main() {
@@ -47,27 +49,31 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	var items []Item
 
-	err = attributevalue.UnmarshalListOfMaps(tableInfo.Items, &items)
+	err = attributevalue.UnmarshalListOfMaps(tableInfo.Items, &tableData)
 	if err != nil {
 		log.Fatalf("failed to unmarshal items, %v", err)
 	}
-
+	go setupWeb()
 	model = setupLLMClient()        // ai client
 	Crawler := crawler.NewCrawler() // web crawler
 	// Add crawling HTML selector classes
-	Crawler.Selectors.Classes = []string{"PageList-items-item"}
+	Crawler.Selectors.Classes = []string{"PageList-items-item", "Topics"}
+	Crawler.Selectors.Ids = []string{"root"}
+	Crawler.Selectors.LinkTextPatterns = []string{"quake"}
+	Crawler.Selectors.UrlPatterns = []string{"quake"}
 	// Allow 5 consecutive pages to crawl at a time
-	Crawler.Threads = 5
-	for _, item := range items {
+	Crawler.Threads = 1
+	for _, item := range tableData {
 		visited[item.RefUrl] = true
 		Crawler.IgnoredUrls = append(Crawler.IgnoredUrls, item.RefUrl)
-		fmt.Printf("ID: %v %v %v %v \n", item.Magnitude, item.Deaths, item.Injured, item.Location)
 	}
-
 	for {
-		crawledData, _ := Crawler.Crawl("https://apnews.com/hub/earthquakes")
+		crawledData, _ := Crawler.Crawl(
+			"https://apnews.com/hub/earthquakes",
+			"https://www.aljazeera.com/tag/earthquakes/",
+			"https://abcnews.go.com/alerts/earthquakes",
+		)
 		fmt.Println("Total: ", len(crawledData))
 		for url, data := range crawledData {
 			if visited[url] {
@@ -81,9 +87,8 @@ func main() {
 			sanitizedText, err := sanitizeHTML(data)
 			if err != nil {
 				fmt.Println("Error:", err)
-				return
 			}
-			fmt.Printf("Length in lines: %v \n", len(sanitizedText)/100)
+			fmt.Printf("lines: %v \n", len(sanitizedText)/100)
 			// Call Gemini API with sanitizedText
 			r, err := getLLMResponse(model, sanitizedText)
 			if err != nil {
@@ -112,7 +117,8 @@ func processResponse(r string, refUrl string) {
 
 	// create ID based on magnitude and location and date
 	hasher := md5.New()
-	hasher.Write([]byte(fmt.Sprintf("%v-%v-%v", info.Magnitude, info.Location, info.Date)))
+	YYYYMM := info.Date[:len(info.Date)-3]
+	hasher.Write([]byte(fmt.Sprintf("%v-%v-%v", info.Magnitude, info.Location, YYYYMM)))
 	hash := hasher.Sum(nil)
 	info.ID = hex.EncodeToString(hash)
 	info.LastUpdated = time.Now().Format("2006-01-02")
@@ -123,7 +129,8 @@ func processResponse(r string, refUrl string) {
 		log.Printf("Failed to marshal item: %v", err)
 		return
 	}
-	if info.Magnitude == 0 {
+	if info.Magnitude == 0 || info.Date == "unknown" || info.Location == "unknown" {
+		// discard the item if any of the required fields are missing
 		return
 	}
 	err = UpdateOrInsertItem(tableName, info)
@@ -146,13 +153,10 @@ func setupLLMClient() *genai.GenerativeModel {
 func getLLMResponse(model *genai.GenerativeModel, text string) (string, error) {
 	prompt := `
 	output a json with the following format:
-
 	{"deaths": 0, "injured": 0, "magnitude": 4.7, "location": "City, State", "date": "YYYY-MM-DD"}
-
-	(int) deaths value should come from term like "[number] people died/dead/killed" or in words like "killing at least three"
-	(int) injured value should come from term like "[number] people injured/hurt/hospitalized"
-	0 if int is missing
-	(string) location must be in the format "City, State" or "City, Country" if outside the US
+	(int) deaths/injured value should come from term like "[number] people died/dead/killed/injured" or in words like "killing at least three" as deaths or "injuring ten" as injured value. 0 if int is missing.
+	(string) location must be in the format "City, State" or "City, Country" if outside the US. "unknown" if not confident in location.
+	(string) date must be in the format "YYYY-MM-DD", "unknown" if date is missing
 	` + text
 	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
 	if err != nil {
@@ -164,6 +168,7 @@ func getLLMResponse(model *genai.GenerativeModel, text string) (string, error) {
 		responseString += fmt.Sprintf("%v", part)
 	}
 	responseString = strings.Trim(responseString, "`")
+	responseString = strings.Replace(responseString, "`", "", -1)
 	responseString = strings.Trim(responseString, "json")
 	responseString = strings.Trim(responseString, "\n")
 	// Return an empty string if no response is found

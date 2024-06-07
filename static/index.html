@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Earthquake Data</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fomantic-ui/2.9.2/semantic.min.css">
+    <link rel="stylesheet" href="https://cdn.datatables.net/2.0.8/css/dataTables.semanticui.css">
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"
+        integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fomantic-ui/2.9.2/semantic.min.js"></script>
+    <script src="https://cdn.datatables.net/2.0.8/js/dataTables.js"></script>
+    <script src="https://cdn.datatables.net/2.0.8/js/dataTables.semanticui.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fomantic-ui/2.9.2/semantic.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            flex-direction: column;
+            padding: 1em;
+            background: rgb(46, 46, 51);
+            background: radial-gradient(circle, rgba(46, 46, 51, 1) 80%, rgb(33, 28, 28) 100%);
+            color: white;
+        }
+
+        table {
+            width: 100%;
+            height: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        #table-content {
+            padding: 1em;
+            border-radius: 1em;
+            border-style: solid;
+            border-color: #f2f2f2;
+            background-color: #333;
+            height: 100%;
+            position: relative;
+            overflow: scroll;
+            width: 100%;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>AI Earthquake Tracker</h1>
+    <p>Earthquake data from ai interpreted articles on the web</p>
+    <div id="table-content">
+        <table id="earthquakeTable" class="ui inverted celled table display">
+            <thead>
+                <tr>
+                    <th>Magnitude</th>
+                    <th>Injured</th>
+                    <th>Deaths</th>
+                    <th>Location</th>
+                    <th>Date</th>
+                    <th>Reference</th>
+                </tr>
+            </thead>
+            <tbody>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+
+        function getPageLength() {
+            return Math.trunc(document.body.scrollHeight / 57);
+        }
+
+        $(document).ready(function () {
+            $('#earthquakeTable').DataTable({
+                nowrap: true,
+                autoWidth: false,
+                pageLength: getPageLength(),
+                lengthChange: false,
+                ajax: {
+                    url: '/items',
+                    dataSrc: ''
+                },
+                columns: [
+                    { data: 'magnitude' },
+                    { data: 'injured' },
+                    { data: 'deaths' },
+                    { data: 'location' },
+                    { data: 'date' },
+                    {
+                        data: 'refUrl',
+                        render: function (data, type, row, meta) {
+                            return '<a href="' + data + '" target="_blank">&#128279;</a>';
+                        }
+                    }
+                ]
+            });
+            window.onresize = function (event) {
+                const numRows = document.body.scrollHeight / 57;
+                $('#earthquakeTable').DataTable().page.len(getPageLength()).draw();
+            };
+        });
+    </script>
+</body>
+
+</html>
