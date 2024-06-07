@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -10,29 +13,60 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/google/generative-ai-go/genai"
 	"github.com/gtsteffaniak/html-web-crawler/crawler"
 	"golang.org/x/net/html"
 	"google.golang.org/api/option"
 )
 
+const (
+	tableName = "ai-earthquake-tracker"
+	region    = "us-east-1"
+)
+type Item struct {
+	ID          string  `json:"id"`
+	LastUpdated string  `json:"lastUpdated"`
+	Injured     int     `json:"injured"`
+	Deaths      int     `json:"deaths"`
+	Magnitude   float64 `json:"magnitude"`
+	Location    string  `json:"location"`
+	Date        string  `json:"date"`
+	RefUrl      string  `json:"refUrl"`
+}
+
 var (
 	visited = map[string]bool{}
 	ctx     = context.Background()
+	model   *genai.GenerativeModel
 )
 
 func main() {
-	// Set up the client and model
-	model := setupClient()
+	_ = setupDBClient() // dynamodb client
+	tableInfo, err := getTableContents(tableName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var items []Item
 
-	Crawler := crawler.NewCrawler()
+	err = attributevalue.UnmarshalListOfMaps(tableInfo.Items, &items)
+	if err != nil {
+		log.Fatalf("failed to unmarshal items, %v", err)
+	}
+
+	model = setupLLMClient()        // ai client
+	Crawler := crawler.NewCrawler() // web crawler
 	// Add crawling HTML selector classes
 	Crawler.Selectors.Classes = []string{"PageList-items-item"}
-	// Allow 50 consecutive pages to crawl at a time
-	Crawler.Threads = 50
+	// Allow 5 consecutive pages to crawl at a time
+	Crawler.Threads = 5
+	for _, item := range items {
+		visited[item.RefUrl] = true
+		Crawler.IgnoredUrls = append(Crawler.IgnoredUrls, item.RefUrl)
+		fmt.Printf("ID: %v %v %v %v \n", item.Magnitude, item.Deaths, item.Injured, item.Location)
+	}
+
 	for {
-		fmt.Print("looping")
-		// Crawl starting with a given URL
 		crawledData, _ := Crawler.Crawl("https://apnews.com/hub/earthquakes")
 		fmt.Println("Total: ", len(crawledData))
 		for url, data := range crawledData {
@@ -41,7 +75,7 @@ func main() {
 			}
 			visited[url] = true
 			if len(data) > 1000000 {
-				fmt.Printf("Skipping %v \n size: %v \n", url, len(data))
+				fmt.Printf("Skipping %v \n lines: %v \n", url, len(data))
 				continue
 			}
 			sanitizedText, err := sanitizeHTML(data)
@@ -49,43 +83,80 @@ func main() {
 				fmt.Println("Error:", err)
 				return
 			}
+			fmt.Printf("Length in lines: %v \n", len(sanitizedText)/100)
 			// Call Gemini API with sanitizedText
 			r, err := getLLMResponse(model, sanitizedText)
 			if err != nil {
-				fmt.Println("Error calling Gemini API:", err)
+				log.Println(err)
 				continue
 			}
-
-			// Process the Gemini response (e.g., print explanation)
-			fmt.Println("Gemini explanation:", r)
-
+			processResponse(r, url)
+			// https://ai.google.dev/pricing
+			// rate limit to 4 requests per minute
+			time.Sleep(15 * time.Second)
 		}
-		time.Sleep(1 * time.Minute)
+		time.Sleep(24 * time.Hour)
 	}
 }
 
-func setupClient() *genai.GenerativeModel {
-	// Access your API key as an environment variable (see "Set up your API key" above)
+// Function to process the JSON response
+func processResponse(r string, refUrl string) {
+	var info Item
+
+	err := json.Unmarshal([]byte(r), &info)
+	if err != nil {
+		log.Printf("Failed to unmarshal response: %v", err)
+		fmt.Println(r)
+		return
+	}
+
+	// create ID based on magnitude and location and date
+	hasher := md5.New()
+	hasher.Write([]byte(fmt.Sprintf("%v-%v-%v", info.Magnitude, info.Location, info.Date)))
+	hash := hasher.Sum(nil)
+	info.ID = hex.EncodeToString(hash)
+	info.LastUpdated = time.Now().Format("2006-01-02")
+	info.RefUrl = refUrl
+
+	b, err := json.Marshal(info)
+	if err != nil {
+		log.Printf("Failed to marshal item: %v", err)
+		return
+	}
+	if info.Magnitude == 0 {
+		return
+	}
+	err = UpdateOrInsertItem(tableName, info)
+	if err != nil {
+		log.Printf("Failed to update or insert item: %v", err)
+	}
+	fmt.Println(string(b))
+}
+
+func setupLLMClient() *genai.GenerativeModel {
 	client, err := genai.NewClient(ctx, option.WithAPIKey(os.Getenv("API_KEY")))
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// The Gemini 1.5 models are versatile and work with most use cases
-	model := client.GenerativeModel("gemini-1.5-flash")
+	model := client.GenerativeModel("gemini-1.5-flash") // change model?
 	return model
 }
 
 // This function is not includedin the provided code, but represents the logic for calling the Gemini API
 func getLLMResponse(model *genai.GenerativeModel, text string) (string, error) {
 	prompt := `
-	output a json object with the information , with the following format:
-	{"deaths": "0", "injured": "0", "magnitude": "4.7", "location": "Falls City, Texas", "date": "2024-06-05"}
-	keep string and integers consistent and return empty string for missing string values and 0 for empty integer values
+	output a json with the following format:
+
+	{"deaths": 0, "injured": 0, "magnitude": 4.7, "location": "City, State", "date": "YYYY-MM-DD"}
+
+	(int) deaths value should come from term like "[number] people died/dead/killed" or in words like "killing at least three"
+	(int) injured value should come from term like "[number] people injured/hurt/hospitalized"
+	0 if int is missing
+	(string) location must be in the format "City, State" or "City, Country" if outside the US
 	` + text
 	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
 	responseString := ""
 	// Show the model's response, which is expected to be text.
@@ -96,7 +167,7 @@ func getLLMResponse(model *genai.GenerativeModel, text string) (string, error) {
 	responseString = strings.Trim(responseString, "json")
 	responseString = strings.Trim(responseString, "\n")
 	// Return an empty string if no response is found
-	return responseString, nil
+	return responseString, err
 }
 
 // sanitizeText removes non-alphanumeric and non-punctuation characters from a string.
@@ -128,7 +199,6 @@ func extractBodyText(n *html.Node) string {
 	if n.Type == html.TextNode {
 		return sanitizeText(n.Data)
 	}
-
 	var result strings.Builder
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		result.WriteString(extractBodyText(c))
@@ -161,7 +231,6 @@ func sanitizeSpaces(text string) string {
 		}
 	}
 	text = strings.Join(nonEmptyLines, " ")
-
 	// Reduce multiple spaces to a single space
 	re := regexp.MustCompile(`\s+`)
 	text = re.ReplaceAllString(text, " ")
