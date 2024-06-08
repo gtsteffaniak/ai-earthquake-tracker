@@ -68,6 +68,7 @@ func main() {
 		visited[item.RefUrl] = true
 		Crawler.IgnoredUrls = append(Crawler.IgnoredUrls, item.RefUrl)
 	}
+
 	for {
 		crawledData, _ := Crawler.Crawl(
 			"https://apnews.com/hub/earthquakes",
