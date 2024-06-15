@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -37,10 +38,15 @@ type Item struct {
 }
 
 var (
-	visited   = map[string]bool{}
-	ctx       = context.Background()
-	model     *genai.GenerativeModel
-	tableData = []Item{}
+	visited    = map[string]bool{}
+	ctx        = context.Background()
+	model      *genai.GenerativeModel
+	tableData  = []Item{}
+	searchUrls = []string{
+		"https://apnews.com/hub/earthquakes",
+		"https://www.aljazeera.com/tag/earthquakes/",
+		"https://abcnews.go.com/alerts/earthquakes",
+	}
 )
 
 func main() {
@@ -70,17 +76,14 @@ func main() {
 	}
 
 	for {
-		crawledData, _ := Crawler.Crawl(
-			"https://apnews.com/hub/earthquakes",
-			"https://www.aljazeera.com/tag/earthquakes/",
-			"https://abcnews.go.com/alerts/earthquakes",
-		)
+		crawledData, _ := Crawler.Crawl(searchUrls...)
 		fmt.Println("Total: ", len(crawledData))
 		for url, data := range crawledData {
-			if visited[url] {
+			if visited[url] || slices.Contains(searchUrls, url) {
 				continue
 			}
 			visited[url] = true
+
 			if len(data) > 1000000 {
 				fmt.Printf("Skipping %v \n lines: %v \n", url, len(data))
 				continue
