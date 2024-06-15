@@ -29,7 +29,6 @@ func setupWeb() {
 		w.Write(data)
 	})
 	http.HandleFunc("/items", getItemsHandler)
-
 	fmt.Println("Server listening on port 8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
