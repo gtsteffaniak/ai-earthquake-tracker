@@ -3,8 +3,8 @@ WORKDIR /app/
 COPY [ "./", "./" ]
 RUN go build -ldflags='-w -s' .
 
-FROM alpine
-RUN apk add --no-cache ca-certificates
+FROM node:alpine
+RUN npx playwright install firefox
 WORKDIR /app
 COPY --from=builder [ "/app/", "./" ]
 CMD ["/app/ai-earthquake-tracker"]

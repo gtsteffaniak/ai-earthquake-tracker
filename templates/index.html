@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Earthquake Data</title>
+    <style>
+        {{ template "css/general.css" }}
+    </style>
+    <script>
+        {{ template "js/general.js" }}
+    </script>
+</head>
+
+<body>
+    <h1>AI Earthquake Tracker</h1>
+    <p>Earthquake data from ai interpreted articles on the web</p>
+    <input type="text" id="myInput" onkeyup="searchTable()" placeholder="Search for names..">
+
+    <div id="table-content">
+        <table id="earthquakeTable" class="ui inverted celled table display">
+            <thead>
+                <tr>
+                    <th onclick="sortTable(0)">Magnitude</th>
+                    <th onclick="sortTable(1)">Injured</th>
+                    <th onclick="sortTable(2)">Deaths</th>
+                    <th onclick="sortTable(3)">Location</th>
+                    <th onclick="sortTable(4)">Date</th>
+                    <th>Reference</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .tableData}}
+                <tr>
+                    <td>{{.Magnitude}}</td>
+                    <td>{{.Injured}}</td>
+                    <td>{{.Deaths}}</td>
+                    <td>{{.Location}}</td>
+                    <td>{{.Date}}</td>
+                    <td><a href="{{.RefUrl}}" target="_blank">Reference</a></td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+</body>
+
+</html>
