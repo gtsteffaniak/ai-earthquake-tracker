@@ -20,7 +20,7 @@ type TemplateRenderer struct {
 	devMode     bool
 }
 
-func SetupWeb(devMode bool, logger slog.Logger, tableInfo []Item) {
+func SetupWeb(devMode bool, logger slog.Logger, tableInfo *[]Item) {
 
 	e := echo.New()
 	e.Static("/", "static")

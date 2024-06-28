@@ -24,8 +24,9 @@ import (
 )
 
 const (
-	tableName = "ai-earthquake-tracker"
-	region    = "us-east-1"
+	tableName    = "ai-earthquake-tracker"
+	visitedTable = "ai-earthquake-tracker-visited"
+	region       = "us-east-1"
 )
 
 type Item struct {
@@ -40,11 +41,12 @@ type Item struct {
 }
 
 var (
-	visited    = map[string]bool{}
-	ctx        = context.Background()
-	model      *genai.GenerativeModel
-	tableData  = []Item{}
-	searchUrls = []string{
+	visited     = map[string]bool{}
+	ctx         = context.Background()
+	model       *genai.GenerativeModel
+	tableData   = []Item{}
+	visitedData = []Item{}
+	searchUrls  = []string{
 		"https://apnews.com/hub/earthquakes",
 		"https://www.aljazeera.com/tag/earthquakes/",
 		"https://abcnews.go.com/alerts/earthquakes",
@@ -80,13 +82,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	err = attributevalue.UnmarshalListOfMaps(tableInfo.Items, &tableData)
 	if err != nil {
 		log.Fatalf("failed to unmarshal items, %v", err)
 	}
-
-	go SetupWeb(*devMode, *logger, tableData)
+	visitedTableInfo, err := getTableContents(visitedTable)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = attributevalue.UnmarshalListOfMaps(visitedTableInfo.Items, &visitedData)
+	if err != nil {
+		log.Fatalf("failed to unmarshal items, %v", err)
+	}
+	go SetupWeb(*devMode, *logger, &tableData)
 	model = setupLLMClient()        // ai client
 	Crawler := crawler.NewCrawler() // web crawler
 	// Add crawling HTML selector classes
@@ -100,6 +108,10 @@ func main() {
 		visited[item.RefUrl] = true
 		Crawler.IgnoredUrls = append(Crawler.IgnoredUrls, item.RefUrl)
 	}
+	for _, item := range visitedData {
+		visited[item.ID] = true
+		Crawler.IgnoredUrls = append(Crawler.IgnoredUrls, item.ID)
+	}
 
 	for {
 		crawledData, _ := Crawler.Crawl(searchUrls...)
@@ -109,7 +121,10 @@ func main() {
 				continue
 			}
 			visited[url] = true
-
+			err = UpdateOrInsertItem(visitedTable, Item{ID: url})
+			if err != nil {
+				log.Printf("Failed to update or insert item: %v", err)
+			}
 			if len(data) > 1000000 {
 				fmt.Printf("Skipping %v \n lines: %v \n", url, len(data))
 				continue
@@ -136,22 +151,27 @@ func main() {
 
 // Function to process the JSON response
 func processResponse(r string, refUrl string) {
+	now := time.Now().Format("2006-01-02")
 	var info Item
-
 	err := json.Unmarshal([]byte(r), &info)
 	if err != nil {
 		log.Printf("Failed to unmarshal response: %v", err)
-		fmt.Println(r)
 		return
 	}
 
 	// create ID based on magnitude and location and date
 	hasher := md5.New()
 	YYYYMM := info.Date[:len(info.Date)-3]
+	nowYYYYMM := now[:len(now)-3]
+	if YYYYMM != nowYYYYMM {
+		log.Println("Skipping, not a recent article: ", YYYYMM)
+		return
+	}
+
 	hasher.Write([]byte(fmt.Sprintf("%v-%v-%v", info.Magnitude, info.Location, YYYYMM)))
 	hash := hasher.Sum(nil)
 	info.ID = hex.EncodeToString(hash)
-	info.LastUpdated = time.Now().Format("2006-01-02")
+	info.LastUpdated = now
 	info.RefUrl = refUrl
 
 	b, err := json.Marshal(info)
